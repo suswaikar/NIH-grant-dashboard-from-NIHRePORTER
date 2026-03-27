@@ -15,6 +15,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import time
+import hmac
 
 # ── PAGE CONFIG ──────────────────────────────────────────────────────────────
 
@@ -77,6 +78,34 @@ h2, h3 { color: #c8d0e0 !important; font-weight: 500 !important; }
 .stAlert { background: #1a2535 !important; border-color: #2a4060 !important; color: #8ab4d8 !important; }
 </style>
 """, unsafe_allow_html=True)
+
+
+# ── PASSWORD GATE ────────────────────────────────────────────────────────────
+
+def check_password():
+    """Return True if the user has entered the correct password."""
+    # If no password is configured in secrets, skip the gate (local dev)
+    if "password" not in st.secrets:
+        return True
+
+    if st.session_state.get("authenticated"):
+        return True
+
+    st.markdown("### 🔒 Access restricted")
+    st.markdown("This dashboard is for BU/BMC faculty and staff.")
+    pwd = st.text_input("Enter password", type="password", key="pwd_input")
+    if pwd:
+        if hmac.compare_digest(pwd, st.secrets["password"]):
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Incorrect password.")
+    return False
+
+
+if not check_password():
+    st.stop()
+
 
 # ── CONSTANTS ────────────────────────────────────────────────────────────────
 
