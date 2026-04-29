@@ -631,7 +631,17 @@ def main():
             )
             section_summary = section_summary.sort_values("Total_Direct", ascending=False)
 
-            # Format for display
+            # Summary table
+            sec_table = section_summary.copy()
+            sec_table["Total_Gap"] = sec_table["Total_Gap"].apply(lambda x: f"${x:,.0f}")
+            sec_table["Total_Direct"] = sec_table["Total_Direct"].apply(lambda x: f"${x:,.0f}")
+            sec_table["Transition %"] = sec_table["Transition %"].astype(str) + "%"
+            sec_table_display = sec_table[["Section", "N_Awardees", "N_Eligible", "N_Transitioned", "Total_Gap", "Total_Direct", "Transition %"]].copy()
+            sec_table_display.columns = ["Section", "K Awardees", "Eligible", "Transitioned", "DoM Gap Investment", "Post-K NIH Direct", "Transition %"]
+            st.dataframe(sec_table_display, use_container_width=True, hide_index=True)
+
+            # Expandable detail per section
+            st.markdown("##### Click a section to see individual awardees")
             sec_display = section_summary.copy()
             sec_display["Total_Gap_fmt"] = sec_display["Total_Gap"].apply(lambda x: f"${x:,.0f}")
             sec_display["Total_Direct_fmt"] = sec_display["Total_Direct"].apply(lambda x: f"${x:,.0f}")
