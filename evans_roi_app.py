@@ -78,6 +78,7 @@ _CLOUD_DATA = _SCRIPT_DIR / "data"
 BASE = _LOCAL_BASE if _LOCAL_BASE.exists() else _CLOUD_DATA
 K_FILE = BASE / "K award 2016 - 2026.xlsx"
 AWARD_TRACKER = BASE / "DoM Award Tracker.xlsx"
+SOURCE_DATA = BASE / "Evans_Endowment_Awards_Source_Data.xlsx"
 
 API_URL = "https://api.reporter.nih.gov/v2/projects/search"
 BU_ORGS = {"BOSTON UNIVERSITY", "BOSTON MEDICAL CENTER", "BOSTON UNIVERSITY MEDICAL CAMPUS"}
@@ -191,6 +192,19 @@ def load_other_awards():
     at["Award"] = at["Award"].replace({"Junior Award": "Junior Faculty"})
     at = at[at["Award"].isin(["Pilot", "Junior Faculty"])].copy()
     return at
+
+
+@st.cache_data(ttl=3600)
+def load_demographics():
+    """Load PI demographics (sex, current position) from source data."""
+    if not SOURCE_DATA.exists():
+        return pd.DataFrame()
+    try:
+        df = pd.read_excel(SOURCE_DATA, sheet_name="PI Demographics", header=0)
+        df = df.drop_duplicates(subset="Name", keep="first")
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 
 def query_nih_reporter(first: str, last: str) -> list:
@@ -404,6 +418,7 @@ def main():
 
     k_data = load_k_awardees()
     other_data = load_other_awards()
+    demo_data = load_demographics()
     overview = build_overview(k_data, other_data)
 
     # ── SIDEBAR ──────────────────────────────────────────────────────────────
@@ -417,8 +432,8 @@ def main():
     filtered = overview[overview["FY"].isin(selected_fys) & overview["Award"].isin(selected_awards)]
 
     # ── TABS ─────────────────────────────────────────────────────────────────
-    main_tab, roi_tab, drill_tab, lookup_tab = st.tabs([
-        "📊 Awards Overview", "💰 ROI Summary", "🔍 Drill Down", "🔎 Investigator Lookup"
+    main_tab, roi_tab, sex_tab, drill_tab, lookup_tab = st.tabs([
+        "📊 Awards Overview", "💰 ROI Summary", "👤 Sex Breakdown", "🔍 Drill Down", "🔎 Investigator Lookup"
     ])
 
     # ==================================================================
@@ -802,7 +817,181 @@ transition rate calculations — they haven't had enough time to secure subseque
 """)
 
     # ==================================================================
-    # TAB 3: DRILL DOWN
+    # TAB: SEX BREAKDOWN
+    # ==================================================================
+    with sex_tab:
+        st.header("Awards & Outcomes by Biological Sex")
+
+        if len(demo_data) == 0 or "Sex" not in demo_data.columns:
+            st.warning("No demographics data available. Add sex data to the PI Demographics tab in Evans_Endowment_Awards_Source_Data.xlsx.")
+        else:
+            sex_map = dict(zip(demo_data["Name"], demo_data["Sex"]))
+            n_with_sex = sum(1 for v in sex_map.values() if pd.notna(v))
+            st.caption(f"Sex data available for {n_with_sex} of {len(sex_map)} investigators.")
+
+            # --- K Awards by Sex ---
+            st.markdown("### K Awards by Sex")
+            k_with_sex = k_data.copy()
+            k_with_sex["Sex"] = k_with_sex["Name"].map(sex_map)
+            k_with_sex = k_with_sex[k_with_sex["Sex"].notna()]
+
+            # Summary metrics
+            k_sex_summary = k_with_sex.groupby("Sex").agg(
+                N_Awardees=("Name", "nunique"),
+                N_AwardYears=("Name", "count"),
+                Total_Gap=("SalaryGap", "sum"),
+                Total_Cost=("TotalCost", "sum"),
+            ).reset_index()
+            k_sex_summary["Avg Gap/Awardee"] = k_sex_summary["Total_Gap"] / k_sex_summary["N_Awardees"]
+            k_sex_summary["Sex"] = k_sex_summary["Sex"].map({"F": "Female", "M": "Male"})
+
+            sc1, sc2 = st.columns(2)
+            for _, row in k_sex_summary.iterrows():
+                col = sc1 if row["Sex"] == "Female" else sc2
+                col.metric(f"K Awardees ({row['Sex']})", f"{int(row['N_Awardees'])}")
+                col.metric(f"Total Award-Years ({row['Sex']})", f"{int(row['N_AwardYears'])}")
+                col.metric(f"Total DoM Cost ({row['Sex']})", f"${row['Total_Cost']:,.0f}")
+
+            # K awards by sex and year
+            k_sex_year = k_with_sex.groupby(["FY", "Sex"]).agg(
+                Count=("Name", "nunique"),
+                Cost=("TotalCost", "sum"),
+            ).reset_index()
+            k_sex_year["Sex"] = k_sex_year["Sex"].map({"F": "Female", "M": "Male"})
+
+            fig_ksex = px.bar(
+                k_sex_year.sort_values("FY"),
+                x="FY", y="Count", color="Sex", barmode="group",
+                color_discrete_map={"Female": "#f472b6", "Male": "#60a5fa"},
+                labels={"Count": "Unique K Awardees", "FY": "Fiscal Year"},
+                title="K Awardees by Sex and Year",
+            )
+            fig_ksex.update_layout(
+                plot_bgcolor="#1a1f2e", paper_bgcolor="#1a1f2e", font_color="#c8d0e0",
+                xaxis=dict(gridcolor="#2a3050"), yaxis=dict(gridcolor="#2a3050"),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            )
+            st.plotly_chart(fig_ksex, use_container_width=True)
+
+            # --- K-to-R Conversion by Sex ---
+            st.markdown("### K-to-R Conversion Rate by Sex")
+
+            CURRENT_FY = 2026
+            BUFFER_YEARS = 1
+
+            # Need NIH data — use batch query if available
+            all_k_names = sorted(k_data["Name"].unique())
+            combined_names_for_sex = sorted(set(all_k_names) | set(demo_data["Name"].unique()))
+            all_nih_sex = batch_query_all_awardees(tuple(combined_names_for_sex))
+
+            if len(all_nih_sex) > 0:
+                non_k_sex = all_nih_sex[~all_nih_sex["Is K Grant"]].copy()
+
+                k_sections_sex = k_data.groupby(["Name"]).agg(
+                    LastK=("FY_Num", "max"),
+                    Section=("Section", "first"),
+                ).reset_index()
+                k_sections_sex["Sex"] = k_sections_sex["Name"].map(sex_map)
+                k_sections_sex = k_sections_sex[k_sections_sex["Sex"].notna()]
+                k_sections_sex["Eligible"] = k_sections_sex["LastK"] + BUFFER_YEARS < CURRENT_FY
+
+                # Post-K grants
+                last_k_map = dict(zip(k_sections_sex["Name"], k_sections_sex["LastK"]))
+                non_k_sex["LastK"] = non_k_sex["Name"].map(last_k_map)
+                post_k_sex = non_k_sex[non_k_sex["LastK"].notna() & (non_k_sex["Fiscal Year"] > non_k_sex["LastK"])]
+                names_with_post_k = set(post_k_sex["Name"].unique())
+
+                k_sections_sex["HasPostK"] = k_sections_sex["Name"].isin(names_with_post_k)
+
+                # Post-K direct costs per person
+                post_k_direct_by_pi = post_k_sex.groupby("Name")["Direct Cost"].sum().to_dict()
+                k_sections_sex["PostK_Direct"] = k_sections_sex["Name"].map(post_k_direct_by_pi).fillna(0)
+
+                # Conversion summary by sex
+                sex_conv = k_sections_sex.groupby("Sex").agg(
+                    N_Total=("Name", "nunique"),
+                    N_Eligible=("Eligible", "sum"),
+                    N_Transitioned=("HasPostK", lambda x: (x & k_sections_sex.loc[x.index, "Eligible"]).sum()),
+                    Total_PostK_Direct=("PostK_Direct", "sum"),
+                ).reset_index()
+                sex_conv["Transition %"] = (
+                    (100 * sex_conv["N_Transitioned"] / sex_conv["N_Eligible"])
+                    .where(sex_conv["N_Eligible"] > 0, other=0)
+                    .round(0).astype(int)
+                )
+                sex_conv["Sex"] = sex_conv["Sex"].map({"F": "Female", "M": "Male"})
+
+                # Display
+                conv_display = sex_conv.copy()
+                conv_display["Total_PostK_Direct"] = conv_display["Total_PostK_Direct"].apply(lambda x: f"${x:,.0f}")
+                conv_display["Transition %"] = conv_display["Transition %"].astype(str) + "%"
+                conv_display.columns = ["Sex", "K Awardees", "Eligible", "Transitioned", "Post-K NIH Direct", "Transition %"]
+                st.dataframe(conv_display, use_container_width=True, hide_index=True)
+
+                # Bar chart
+                fig_conv = go.Figure()
+                for _, row in sex_conv.iterrows():
+                    fig_conv.add_trace(go.Bar(
+                        name=row["Sex"],
+                        x=["Eligible", "Transitioned"],
+                        y=[row["N_Eligible"], row["N_Transitioned"]],
+                        marker_color="#f472b6" if row["Sex"] == "Female" else "#60a5fa",
+                        text=[int(row["N_Eligible"]), int(row["N_Transitioned"])],
+                        textposition="auto",
+                    ))
+                fig_conv.update_layout(
+                    barmode="group", title="K-to-R Transition by Sex",
+                    plot_bgcolor="#1a1f2e", paper_bgcolor="#1a1f2e", font_color="#c8d0e0",
+                    xaxis=dict(gridcolor="#2a3050"), yaxis=dict(gridcolor="#2a3050", title="Count"),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                )
+                st.plotly_chart(fig_conv, use_container_width=True)
+
+                # Detailed table
+                with st.expander("View all K awardees by sex"):
+                    detail = k_sections_sex[["Name", "Sex", "Section", "LastK", "Eligible", "HasPostK", "PostK_Direct"]].copy()
+                    detail["Sex"] = detail["Sex"].map({"F": "Female", "M": "Male"})
+                    detail["LastK"] = detail["LastK"].apply(lambda x: f"FY{x}")
+                    detail["Eligible"] = detail["Eligible"].map({True: "Yes", False: "Too recent"})
+                    detail["HasPostK"] = detail["HasPostK"].map({True: "✓", False: "—"})
+                    detail["PostK_Direct"] = detail["PostK_Direct"].apply(lambda x: f"${x:,.0f}" if x > 0 else "—")
+                    detail.columns = ["Name", "Sex", "Section", "Last K Year", "Eligible", "Transitioned", "Post-K Direct"]
+                    st.dataframe(detail.sort_values(["Sex", "Name"]), use_container_width=True, hide_index=True)
+
+            # --- Pilot/Jr Faculty by Sex ---
+            if len(other_data):
+                st.markdown("### Pilot / Junior Faculty Awards by Sex")
+                pj_with_sex = other_data.copy()
+                pj_with_sex["Sex"] = pj_with_sex["Name"].map(sex_map)
+                pj_with_sex = pj_with_sex[pj_with_sex["Sex"].notna()]
+
+                if len(pj_with_sex):
+                    pj_sex_summary = pj_with_sex.groupby(["Award", "Sex"]).agg(
+                        N_Awardees=("Name", "nunique"),
+                        Total_Amount=("Amount", "sum"),
+                    ).reset_index()
+                    pj_sex_summary["Sex"] = pj_sex_summary["Sex"].map({"F": "Female", "M": "Male"})
+
+                    pj_display = pj_sex_summary.copy()
+                    pj_display["Total_Amount"] = pj_display["Total_Amount"].apply(lambda x: f"${x:,.0f}")
+                    pj_display.columns = ["Award Type", "Sex", "Unique Awardees", "Total Investment"]
+                    st.dataframe(pj_display, use_container_width=True, hide_index=True)
+
+                    fig_pj = px.bar(
+                        pj_sex_summary, x="Award", y="N_Awardees", color="Sex", barmode="group",
+                        color_discrete_map={"Female": "#f472b6", "Male": "#60a5fa"},
+                        labels={"N_Awardees": "Unique Awardees", "Award": "Award Type"},
+                        title="Pilot / Junior Faculty Awardees by Sex",
+                    )
+                    fig_pj.update_layout(
+                        plot_bgcolor="#1a1f2e", paper_bgcolor="#1a1f2e", font_color="#c8d0e0",
+                        xaxis=dict(gridcolor="#2a3050"), yaxis=dict(gridcolor="#2a3050"),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    )
+                    st.plotly_chart(fig_pj, use_container_width=True)
+
+    # ==================================================================
+    # TAB: DRILL DOWN
     # ==================================================================
     with drill_tab:
         st.header("Drill Down by Award Type and Year")
