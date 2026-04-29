@@ -82,9 +82,12 @@ AWARD_TRACKER = BASE / "DoM Award Tracker.xlsx"
 API_URL = "https://api.reporter.nih.gov/v2/projects/search"
 BU_ORGS = {"BOSTON UNIVERSITY", "BOSTON MEDICAL CENTER", "BOSTON UNIVERSITY MEDICAL CAMPUS"}
 
+# K-mechanism activity codes to EXCLUDE from post-K return calculation.
+# K24 is intentionally omitted — it's a midcareer award not supported by Evans/DoM,
+# so obtaining a K24 counts as a successful outcome (like an R01).
 K_CODES = {
     "K01", "K02", "K05", "K06", "K07", "K08", "K11", "K12",
-    "K22", "K23", "K24", "K25", "K26", "K43", "K76", "K99", "K00",
+    "K22", "K23", "K25", "K26", "K43", "K76", "K99", "K00",
     "KL1", "KL2",
 }
 
