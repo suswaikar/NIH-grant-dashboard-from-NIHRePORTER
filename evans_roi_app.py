@@ -525,222 +525,257 @@ def main():
             st.warning("No NIH grants found. Try reloading.")
         else:
             # Build per-awardee last support year
-            last_support = {}
-            for name in combined_names:
-                years = []
+            CURRENT_FY = 2026
+            BUFFER_YEARS = 1
+
+            last_k_year = {}
+            for name in all_k_names:
                 pk = k_data[k_data["Name"] == name]
-                if len(pk):
-                    years.append(pk["FY_Num"].max())
-                if len(other_data):
+                last_k_year[name] = pk["FY_Num"].max() if len(pk) else 9999
+
+            last_pilot_year = {}
+            if len(other_data):
+                for name in pilot_jr_names:
                     po = other_data[other_data["Name"] == name]
-                    if len(po):
-                        years.append(po["FY_Num"].max())
-                last_support[name] = max(years) if years else 9999
+                    last_pilot_year[name] = po["FY_Num"].max() if len(po) else 9999
 
             # Filter to non-K, post-support grants
             non_k = all_nih[~all_nih["Is K Grant"]].copy()
-            non_k["Last_Support"] = non_k["Name"].map(last_support)
-            post_support = non_k[non_k["Fiscal Year"] > non_k["Last_Support"]].copy()
 
-            # === HEADLINE METRICS ===
-            # DoM investment
-            k_investment = k_data["TotalCost"].sum()
-            pilot_investment = other_data["Amount"].sum() if len(other_data) else 0
-            total_dom_investment = k_investment + pilot_investment
+            # ── K AWARDS SUB-TAB ─────────────────────────────────────────
+            # ── PILOT / JR FACULTY SUB-TAB ───────────────────────────────
+            roi_k_tab, roi_pj_tab = st.tabs(["K Award → R01/Equivalent", "Pilot / Junior Faculty"])
 
-            # NIH return
-            total_direct = post_support["Direct Cost"].sum()
-            total_indirect = post_support["Indirect Cost"].sum()
-            total_nih = total_direct + total_indirect
-            roi_direct = total_direct / total_dom_investment if total_dom_investment > 0 else 0
-            roi_total = total_nih / total_dom_investment if total_dom_investment > 0 else 0
+            # ==============================================================
+            # K AWARD ROI
+            # ==============================================================
+            with roi_k_tab:
+                k_investment = k_data["TotalCost"].sum()
 
-            n_with_funding = post_support["Name"].nunique()
-            n_total = len(combined_names)
+                # Post-K grants for K awardees
+                k_non_k = non_k[non_k["Name"].isin(all_k_names)].copy()
+                k_non_k["LastK"] = k_non_k["Name"].map(last_k_year)
+                k_post = k_non_k[k_non_k["Fiscal Year"] > k_non_k["LastK"]].copy()
 
-            # Transition rate: only count awardees whose support ended >1 year ago
-            # (don't penalize those still on K or recently finished)
-            CURRENT_FY = 2026
-            BUFFER_YEARS = 1
-            eligible_names = [n for n, yr in last_support.items() if yr + BUFFER_YEARS < CURRENT_FY]
-            n_eligible = len(eligible_names)
-            n_eligible_transitioned = post_support[post_support["Name"].isin(eligible_names)]["Name"].nunique()
-            transition_pct = (100 * n_eligible_transitioned / n_eligible) if n_eligible > 0 else 0
-            n_too_recent = n_total - n_eligible
+                k_direct = k_post["Direct Cost"].sum()
+                k_indirect = k_post["Indirect Cost"].sum()
+                k_total_nih = k_direct + k_indirect
+                k_roi = k_direct / k_investment if k_investment > 0 else 0
 
-            st.markdown("### Executive Summary")
-            st.markdown(
-                f"The Department invested **${total_dom_investment:,.0f}** across the K-award salary-gap program "
-                f"({len(all_k_names)} faculty) and the pilot / junior faculty award programs "
-                f"({len(pilot_jr_names)} faculty). "
-                f"Conservatively counted — only NIH grants newly initiated after the period of DoM support — "
-                f"**{n_with_funding}** of these investigators have generated "
-                f"**${total_direct:,.0f}** in NIH direct costs and "
-                f"**${total_nih:,.0f}** in total NIH funding."
-            )
-            st.caption(
-                f"Transition rate excludes {n_too_recent} awardees whose support ended in "
-                f"FY{CURRENT_FY - BUFFER_YEARS} or later (insufficient time to secure subsequent funding)."
-            )
+                k_eligible = [n for n, yr in last_k_year.items() if yr + BUFFER_YEARS < CURRENT_FY]
+                k_n_eligible = len(k_eligible)
+                k_n_transitioned = k_post[k_post["Name"].isin(k_eligible)]["Name"].nunique()
+                k_trans_pct = (100 * k_n_transitioned / k_n_eligible) if k_n_eligible > 0 else 0
+                k_n_too_recent = len(all_k_names) - k_n_eligible
 
-            hc1, hc2, hc3, hc4 = st.columns(4)
-            hc1.metric("DoM Investment", f"${total_dom_investment / 1e6:.1f}M")
-            hc2.metric("NIH Direct (Post-Support)", f"${total_direct / 1e6:.1f}M")
-            hc3.metric("NIH Total (Post-Support)", f"${total_nih / 1e6:.1f}M")
-            hc4.metric("ROI (Direct / DoM)", f"{roi_direct:.0f}×")
+                hc1, hc2, hc3, hc4 = st.columns(4)
+                hc1.metric("DoM K Investment", f"${k_investment / 1e6:.1f}M")
+                hc2.metric("Post-K NIH Direct", f"${k_direct / 1e6:.1f}M")
+                hc3.metric("Post-K NIH Total", f"${k_total_nih / 1e6:.1f}M")
+                hc4.metric("ROI (Direct / DoM)", f"{k_roi:.0f}×")
 
-            rc1, rc2, rc3, rc4 = st.columns(4)
-            rc1.metric("Total Faculty Supported", f"{n_total}")
-            rc2.metric("Eligible for Transition", f"{n_eligible}", help=f"Excludes {n_too_recent} with support ending FY{CURRENT_FY - BUFFER_YEARS}+")
-            rc3.metric("Transition Rate", f"{transition_pct:.0f}%", help=f"{n_eligible_transitioned} of {n_eligible} eligible")
-            rc4.metric("ROI (Total / DoM)", f"{roi_total:.0f}×")
+                rc1, rc2, rc3, rc4 = st.columns(4)
+                rc1.metric("K Awardees", f"{len(all_k_names)}")
+                rc2.metric("Eligible for Transition", f"{k_n_eligible}",
+                           help=f"Excludes {k_n_too_recent} with K ending FY{CURRENT_FY - BUFFER_YEARS}+")
+                rc3.metric("Transition Rate", f"{k_trans_pct:.0f}%",
+                           help=f"{k_n_transitioned} of {k_n_eligible} eligible")
+                rc4.metric("ROI (Total / DoM)", f"{k_total_nih / k_investment:.0f}×" if k_investment > 0 else "—")
 
-            # === K-TO-R BY SECTION ===
-            st.markdown("### K-to-R Outcomes by Section")
-            k_sections = k_data.groupby(["Name", "Section"]).agg(
-                LastK=("FY_Num", "max"),
-                TotalGap=("SalaryGap", "sum"),
-            ).reset_index()
+                # === K-TO-R BY SECTION ===
+                st.markdown("### K-to-R Outcomes by Section")
+                k_sections = k_data.groupby(["Name", "Section"]).agg(
+                    LastK=("FY_Num", "max"),
+                    TotalGap=("SalaryGap", "sum"),
+                ).reset_index()
 
-            k_post = post_support[post_support["Name"].isin(all_k_names)]
-            k_post_by_pi = k_post.groupby("Name").agg(
-                PostK_Direct=("Direct Cost", "sum"),
-                PostK_Indirect=("Indirect Cost", "sum"),
-                PostK_Grants=("Core Project", "nunique"),
-            ).reset_index()
+                k_post_by_pi = k_post.groupby("Name").agg(
+                    PostK_Direct=("Direct Cost", "sum"),
+                    PostK_Indirect=("Indirect Cost", "sum"),
+                    PostK_Grants=("Core Project", "nunique"),
+                ).reset_index()
 
-            k_merged = k_sections.merge(k_post_by_pi, on="Name", how="left")
-            k_merged["PostK_Direct"] = k_merged["PostK_Direct"].fillna(0)
-            k_merged["PostK_Indirect"] = k_merged["PostK_Indirect"].fillna(0)
-            k_merged["PostK_Grants"] = k_merged["PostK_Grants"].fillna(0).astype(int)
-            k_merged["HasPostK"] = k_merged["PostK_Direct"] > 0
-            # Only count toward transition rate if K ended >1 year ago
-            k_merged["Eligible"] = k_merged["LastK"] + BUFFER_YEARS < CURRENT_FY
+                k_merged = k_sections.merge(k_post_by_pi, on="Name", how="left")
+                k_merged["PostK_Direct"] = k_merged["PostK_Direct"].fillna(0)
+                k_merged["PostK_Indirect"] = k_merged["PostK_Indirect"].fillna(0)
+                k_merged["PostK_Grants"] = k_merged["PostK_Grants"].fillna(0).astype(int)
+                k_merged["HasPostK"] = k_merged["PostK_Direct"] > 0
+                k_merged["Eligible"] = k_merged["LastK"] + BUFFER_YEARS < CURRENT_FY
 
-            section_summary = k_merged.groupby("Section").agg(
-                N_Awardees=("Name", "nunique"),
-                N_Eligible=("Eligible", "sum"),
-                N_Transitioned=("HasPostK", lambda x: (x & k_merged.loc[x.index, "Eligible"]).sum()),
-                Total_Gap=("TotalGap", "sum"),
-                Total_Direct=("PostK_Direct", "sum"),
-            ).reset_index()
-            section_summary["Transition %"] = (
-                (100 * section_summary["N_Transitioned"] / section_summary["N_Eligible"])
-                .where(section_summary["N_Eligible"] > 0, other=0)
-                .round(0).astype(int)
-            )
-            section_summary = section_summary.sort_values("Total_Direct", ascending=False)
+                section_summary = k_merged.groupby("Section").agg(
+                    N_Awardees=("Name", "nunique"),
+                    N_Eligible=("Eligible", "sum"),
+                    N_Transitioned=("HasPostK", lambda x: (x & k_merged.loc[x.index, "Eligible"]).sum()),
+                    Total_Gap=("TotalGap", "sum"),
+                    Total_Direct=("PostK_Direct", "sum"),
+                ).reset_index()
+                section_summary["Transition %"] = (
+                    (100 * section_summary["N_Transitioned"] / section_summary["N_Eligible"])
+                    .where(section_summary["N_Eligible"] > 0, other=0)
+                    .round(0).astype(int)
+                )
+                section_summary = section_summary.sort_values("Total_Direct", ascending=False)
 
-            # Summary table
-            sec_table = section_summary.copy()
-            sec_table["Total_Gap"] = sec_table["Total_Gap"].apply(lambda x: f"${x:,.0f}")
-            sec_table["Total_Direct"] = sec_table["Total_Direct"].apply(lambda x: f"${x:,.0f}")
-            sec_table["Transition %"] = sec_table["Transition %"].astype(str) + "%"
-            sec_table_display = sec_table[["Section", "N_Awardees", "N_Eligible", "N_Transitioned", "Total_Gap", "Total_Direct", "Transition %"]].copy()
-            sec_table_display.columns = ["Section", "K Awardees", "Eligible", "Transitioned", "DoM Gap Investment", "Post-K NIH Direct", "Transition %"]
-            st.dataframe(sec_table_display, use_container_width=True, hide_index=True)
+                # Summary table
+                sec_table = section_summary.copy()
+                sec_table["Total_Gap"] = sec_table["Total_Gap"].apply(lambda x: f"${x:,.0f}")
+                sec_table["Total_Direct"] = sec_table["Total_Direct"].apply(lambda x: f"${x:,.0f}")
+                sec_table["Transition %"] = sec_table["Transition %"].astype(str) + "%"
+                sec_table_display = sec_table[["Section", "N_Awardees", "N_Eligible", "N_Transitioned", "Total_Gap", "Total_Direct", "Transition %"]].copy()
+                sec_table_display.columns = ["Section", "K Awardees", "Eligible", "Transitioned", "DoM Gap Investment", "Post-K NIH Direct", "Transition %"]
+                st.dataframe(sec_table_display, use_container_width=True, hide_index=True)
 
-            # Expandable detail per section
-            st.markdown("##### Click a section to see individual awardees")
-            sec_display = section_summary.copy()
-            sec_display["Total_Gap_fmt"] = sec_display["Total_Gap"].apply(lambda x: f"${x:,.0f}")
-            sec_display["Total_Direct_fmt"] = sec_display["Total_Direct"].apply(lambda x: f"${x:,.0f}")
-            sec_display["Transition_pct"] = sec_display["Transition %"].astype(str) + "%"
+                # Expandable detail per section
+                st.markdown("##### Click a section to see individual awardees")
+                for _, sec_row in section_summary.iterrows():
+                    section = sec_row["Section"]
+                    n_aw = int(sec_row["N_Awardees"])
+                    n_tr = int(sec_row["N_Transitioned"])
+                    gap_fmt = f"${sec_row['Total_Gap']:,.0f}"
+                    direct_fmt = f"${sec_row['Total_Direct']:,.0f}"
+                    trans_pct = f"{int(sec_row['Transition %'])}%"
+                    with st.expander(
+                        f"**{section}** — {n_aw} awardees, {n_tr} transitioned "
+                        f"({trans_pct}), Gap: {gap_fmt}, Post-K Direct: {direct_fmt}"
+                    ):
+                        sec_people = k_merged[k_merged["Section"] == section].sort_values("Name")
+                        people_display = sec_people[["Name", "LastK", "Eligible", "HasPostK", "TotalGap", "PostK_Direct", "PostK_Grants"]].copy()
+                        people_display.columns = ["Name", "Last K Year", "Eligible", "Transitioned", "DoM Gap", "Post-K Direct", "Post-K Grants"]
+                        people_display["Last K Year"] = people_display["Last K Year"].apply(lambda x: f"FY{x}")
+                        people_display["Eligible"] = people_display["Eligible"].map({True: "Yes", False: "Too recent"})
+                        people_display["Transitioned"] = people_display["Transitioned"].map({True: "✓", False: "—"})
+                        people_display["DoM Gap"] = people_display["DoM Gap"].apply(lambda x: f"${x:,.0f}" if x > 0 else "—")
+                        people_display["Post-K Direct"] = people_display["Post-K Direct"].apply(lambda x: f"${x:,.0f}" if x > 0 else "—")
+                        st.dataframe(people_display, use_container_width=True, hide_index=True)
 
-            for _, sec_row in sec_display.iterrows():
-                section = sec_row["Section"]
-                n_aw = int(sec_row["N_Awardees"])
-                n_el = int(sec_row["N_Eligible"])
-                n_tr = int(sec_row["N_Transitioned"])
-                with st.expander(
-                    f"**{section}** — {n_aw} awardees, {n_tr} transitioned "
-                    f"({sec_row['Transition_pct']}), "
-                    f"Gap: {sec_row['Total_Gap_fmt']}, "
-                    f"Post-K Direct: {sec_row['Total_Direct_fmt']}"
-                ):
-                    sec_people = k_merged[k_merged["Section"] == section].sort_values("Name")
-                    people_display = sec_people[["Name", "LastK", "Eligible", "HasPostK", "TotalGap", "PostK_Direct", "PostK_Grants"]].copy()
-                    people_display.columns = ["Name", "Last K Year", "Eligible", "Transitioned", "DoM Gap", "Post-K Direct", "Post-K Grants"]
-                    people_display["Last K Year"] = people_display["Last K Year"].apply(lambda x: f"FY{x}")
-                    people_display["Eligible"] = people_display["Eligible"].map({True: "Yes", False: "Too recent"})
-                    people_display["Transitioned"] = people_display["Transitioned"].map({True: "✓", False: "—"})
-                    people_display["DoM Gap"] = people_display["DoM Gap"].apply(lambda x: f"${x:,.0f}" if x > 0 else "—")
-                    people_display["Post-K Direct"] = people_display["Post-K Direct"].apply(lambda x: f"${x:,.0f}" if x > 0 else "—")
-                    st.dataframe(people_display, use_container_width=True, hide_index=True)
+                # Section bar chart
+                fig_sec = px.bar(
+                    section_summary, x="Section", y="Total_Direct",
+                    color="N_Transitioned", color_continuous_scale="Blues",
+                    labels={"Total_Direct": "Post-K NIH Direct Costs ($)", "N_Transitioned": "# Transitioned"},
+                    title="Post-K NIH Direct Costs by Section",
+                )
+                fig_sec.update_layout(
+                    plot_bgcolor="#1a1f2e", paper_bgcolor="#1a1f2e", font_color="#c8d0e0",
+                    xaxis=dict(gridcolor="#2a3050", tickangle=45),
+                    yaxis=dict(gridcolor="#2a3050", tickformat="$,.0f"),
+                )
+                st.plotly_chart(fig_sec, use_container_width=True)
 
-            # Section bar chart
-            fig_sec = px.bar(
-                section_summary, x="Section", y="Total_Direct",
-                color="N_Transitioned", color_continuous_scale="Blues",
-                labels={"Total_Direct": "Post-K NIH Direct Costs ($)", "N_Transitioned": "# Transitioned"},
-                title="Post-K NIH Direct Costs by Section",
-            )
-            fig_sec.update_layout(
-                plot_bgcolor="#1a1f2e", paper_bgcolor="#1a1f2e", font_color="#c8d0e0",
-                xaxis=dict(gridcolor="#2a3050", tickangle=45),
-                yaxis=dict(gridcolor="#2a3050", tickformat="$,.0f"),
-            )
-            st.plotly_chart(fig_sec, use_container_width=True)
+                # Top K awardees
+                st.markdown("### Top 15 K Awardees by Post-K NIH Direct Funding")
+                top_k = k_post.groupby("Name").agg(
+                    Direct=("Direct Cost", "sum"),
+                    Indirect=("Indirect Cost", "sum"),
+                    N_Grants=("Core Project", "nunique"),
+                ).reset_index().sort_values("Direct", ascending=False).head(15)
+                name_section_k = dict(k_data.drop_duplicates("Name")[["Name", "Section"]].values)
+                top_k["Section"] = top_k["Name"].map(name_section_k).fillna("")
+                top_k_display = top_k[["Name", "Section", "N_Grants", "Direct", "Indirect"]].copy()
+                top_k_display["Total"] = top_k_display["Direct"] + top_k_display["Indirect"]
+                top_k_display.columns = ["Name", "Section", "Unique Grants", "Direct Costs", "Indirect Costs", "Total"]
+                for c in ["Direct Costs", "Indirect Costs", "Total"]:
+                    top_k_display[c] = top_k_display[c].apply(lambda x: f"${x:,.0f}")
+                st.dataframe(top_k_display, use_container_width=True, hide_index=True)
 
-            # === TOP AWARDEES ===
-            st.markdown("### Top 15 Awardees by Post-Support NIH Direct Funding")
-            top_pi = post_support.groupby("Name").agg(
-                Direct=("Direct Cost", "sum"),
-                Indirect=("Indirect Cost", "sum"),
-                N_Grants=("Core Project", "nunique"),
-            ).reset_index().sort_values("Direct", ascending=False).head(15)
+            # ==============================================================
+            # PILOT / JUNIOR FACULTY ROI
+            # ==============================================================
+            with roi_pj_tab:
+                if not len(other_data):
+                    st.info("No Pilot / Junior Faculty data available.")
+                else:
+                    # Pilot/Jr Faculty awardees NOT also K awardees (avoid double-counting)
+                    pj_only_names = sorted(set(pilot_jr_names) - set(all_k_names))
+                    pj_also_k = sorted(set(pilot_jr_names) & set(all_k_names))
 
-            # Add their section
-            name_section = {}
-            for _, r in k_data.drop_duplicates("Name").iterrows():
-                name_section[r["Name"]] = r["Section"]
-            if len(other_data):
-                for _, r in other_data.drop_duplicates("Name").iterrows():
-                    if r["Name"] not in name_section:
-                        name_section[r["Name"]] = r.get("Section", "")
+                    pj_investment = other_data["Amount"].sum()
 
-            top_pi["Section"] = top_pi["Name"].map(name_section).fillna("")
-            top_display = top_pi[["Name", "Section", "N_Grants", "Direct", "Indirect"]].copy()
-            top_display["Total"] = top_display["Direct"] + top_display["Indirect"]
-            top_display.columns = ["Name", "Section", "Unique Grants", "Direct Costs", "Indirect Costs", "Total"]
-            for c in ["Direct Costs", "Indirect Costs", "Total"]:
-                top_display[c] = top_display[c].apply(lambda x: f"${x:,.0f}")
-            st.dataframe(top_display, use_container_width=True, hide_index=True)
+                    # Post-support grants for Pilot/Jr Faculty (using their last pilot/jr year)
+                    pj_non_k = non_k[non_k["Name"].isin(pilot_jr_names)].copy()
+                    pj_non_k["LastSupport"] = pj_non_k["Name"].map(last_pilot_year)
+                    pj_post = pj_non_k[pj_non_k["Fiscal Year"] > pj_non_k["LastSupport"]].copy()
 
-            # === INVESTMENT VS RETURN CHART ===
-            st.markdown("### Investment vs Return by Program")
-            programs = []
-            programs.append({
-                "Program": "K Award",
-                "DoM Investment": k_investment,
-                "NIH Direct (Post-Support)": k_post["Direct Cost"].sum(),
-            })
-            if len(other_data):
-                for award_type in ["Pilot", "Junior Faculty"]:
-                    at_sub = other_data[other_data["Award"] == award_type]
-                    at_names = set(at_sub["Name"].unique())
-                    at_post = post_support[post_support["Name"].isin(at_names) & ~post_support["Name"].isin(all_k_names)]
-                    programs.append({
-                        "Program": award_type,
-                        "DoM Investment": at_sub["Amount"].sum(),
-                        "NIH Direct (Post-Support)": at_post["Direct Cost"].sum(),
-                    })
+                    pj_direct = pj_post["Direct Cost"].sum()
+                    pj_indirect = pj_post["Indirect Cost"].sum()
+                    pj_total_nih = pj_direct + pj_indirect
+                    pj_roi = pj_direct / pj_investment if pj_investment > 0 else 0
 
-            prog_df = pd.DataFrame(programs)
-            fig_inv = go.Figure()
-            fig_inv.add_trace(go.Bar(name="DoM Investment", x=prog_df["Program"], y=prog_df["DoM Investment"],
-                                     marker_color="#f59e0b"))
-            fig_inv.add_trace(go.Bar(name="NIH Direct Return", x=prog_df["Program"], y=prog_df["NIH Direct (Post-Support)"],
-                                     marker_color="#4ade80"))
-            fig_inv.update_layout(
-                barmode="group", title="DoM Investment vs NIH Return by Program",
-                plot_bgcolor="#1a1f2e", paper_bgcolor="#1a1f2e", font_color="#c8d0e0",
-                xaxis=dict(gridcolor="#2a3050"), yaxis=dict(gridcolor="#2a3050", tickformat="$,.0f"),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            )
-            st.plotly_chart(fig_inv, use_container_width=True)
+                    pj_eligible = [n for n, yr in last_pilot_year.items() if yr + BUFFER_YEARS < CURRENT_FY]
+                    pj_n_eligible = len(pj_eligible)
+                    pj_n_transitioned = pj_post[pj_post["Name"].isin(pj_eligible)]["Name"].nunique()
+                    pj_trans_pct = (100 * pj_n_transitioned / pj_n_eligible) if pj_n_eligible > 0 else 0
 
-            # === METHODOLOGY ===
+                    hc1, hc2, hc3, hc4 = st.columns(4)
+                    hc1.metric("DoM Pilot/Jr Investment", f"${pj_investment / 1e6:.1f}M")
+                    hc2.metric("Post-Award NIH Direct", f"${pj_direct / 1e6:.1f}M")
+                    hc3.metric("Post-Award NIH Total", f"${pj_total_nih / 1e6:.1f}M")
+                    hc4.metric("ROI (Direct / DoM)", f"{pj_roi:.0f}×")
+
+                    rc1, rc2, rc3, rc4 = st.columns(4)
+                    rc1.metric("Awardees", f"{len(pilot_jr_names)}")
+                    rc2.metric("Eligible", f"{pj_n_eligible}",
+                               help=f"Excludes those with support ending FY{CURRENT_FY - BUFFER_YEARS}+")
+                    rc3.metric("With Subsequent NIH $", f"{pj_n_transitioned}")
+                    rc4.metric("Transition Rate", f"{pj_trans_pct:.0f}%")
+
+                    if pj_also_k:
+                        st.caption(f"Note: {len(pj_also_k)} awardees also received K awards: {', '.join(pj_also_k)}")
+
+                    # By award type
+                    st.markdown("### By Award Type")
+                    for award_type in ["Pilot", "Junior Faculty"]:
+                        at_sub = other_data[other_data["Award"] == award_type]
+                        if len(at_sub) == 0:
+                            continue
+                        at_names = sorted(at_sub["Name"].unique())
+                        at_invest = at_sub["Amount"].sum()
+                        at_post = pj_post[pj_post["Name"].isin(at_names)]
+                        at_direct = at_post["Direct Cost"].sum()
+
+                        with st.expander(
+                            f"**{award_type}** — {len(at_names)} awardees, "
+                            f"Investment: ${at_invest:,.0f}, "
+                            f"Post-Award NIH Direct: ${at_direct:,.0f}"
+                        ):
+                            at_detail = at_sub.groupby("Name").agg(
+                                Section=("Section", "first"),
+                                FYs=("FY", lambda x: ", ".join(sorted(x.unique()))),
+                                Investment=("Amount", "sum"),
+                            ).reset_index()
+                            # Add post-award NIH
+                            at_post_by_pi = at_post.groupby("Name").agg(
+                                PostDirect=("Direct Cost", "sum"),
+                                PostGrants=("Core Project", "nunique"),
+                            ).reset_index()
+                            at_detail = at_detail.merge(at_post_by_pi, on="Name", how="left")
+                            at_detail["PostDirect"] = at_detail["PostDirect"].fillna(0)
+                            at_detail["PostGrants"] = at_detail["PostGrants"].fillna(0).astype(int)
+                            at_detail["Investment"] = at_detail["Investment"].apply(lambda x: f"${x:,.0f}")
+                            at_detail["PostDirect"] = at_detail["PostDirect"].apply(lambda x: f"${x:,.0f}" if x > 0 else "—")
+                            at_detail.columns = ["Name", "Section", "Years", "DoM Investment", "Post-Award NIH Direct", "Post-Award Grants"]
+                            st.dataframe(at_detail.sort_values("Name"), use_container_width=True, hide_index=True)
+
+                    # Top Pilot/Jr Faculty awardees
+                    if len(pj_post):
+                        st.markdown("### Top Awardees by Post-Award NIH Direct Funding")
+                        top_pj = pj_post.groupby("Name").agg(
+                            Direct=("Direct Cost", "sum"),
+                            Indirect=("Indirect Cost", "sum"),
+                            N_Grants=("Core Project", "nunique"),
+                        ).reset_index().sort_values("Direct", ascending=False).head(15)
+                        name_section_pj = {}
+                        for _, r in other_data.drop_duplicates("Name").iterrows():
+                            name_section_pj[r["Name"]] = r.get("Section", "")
+                        top_pj["Section"] = top_pj["Name"].map(name_section_pj).fillna("")
+                        top_pj_display = top_pj[["Name", "Section", "N_Grants", "Direct", "Indirect"]].copy()
+                        top_pj_display["Total"] = top_pj_display["Direct"] + top_pj_display["Indirect"]
+                        top_pj_display.columns = ["Name", "Section", "Unique Grants", "Direct Costs", "Indirect Costs", "Total"]
+                        for c in ["Direct Costs", "Indirect Costs", "Total"]:
+                            top_pj_display[c] = top_pj_display[c].apply(lambda x: f"${x:,.0f}")
+                        st.dataframe(top_pj_display, use_container_width=True, hide_index=True)
+
+            # === METHODOLOGY (shared) ===
             with st.expander("Methodology & Caveats"):
                 st.markdown("""
 **Data sources:**
@@ -751,6 +786,9 @@ def main():
 **Conservative estimate:** Only counts NIH grants whose fiscal year is strictly
 AFTER the last year of DoM support for that investigator. K-mechanism grants
 are excluded from the return calculation.
+
+**1-year buffer:** Awardees whose support ended in the last year are excluded from
+transition rate calculations — they haven't had enough time to secure subsequent funding.
 
 **Caveats:**
 - GT97 awards excluded (accounting mechanism, not research investment)
