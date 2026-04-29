@@ -1,15 +1,21 @@
 # Secrets (never commit)
 .streamlit/secrets.toml
 
-# Data files
-*.xlsm
-*.xlsx
+# Python
+__pycache__/
+*.pyc
+
+# Archive
+archive/
 
 # Legacy/scratch
 app_v1.py
 build_nih_excel.py
 NIH_Dashboard_VBA.bas
 
-# Python
-__pycache__/
-*.pyc
+# Temp files
+*.csv
+*.tmp
+
+# Root-level Excel (not the bundled data/)
+/*.xlsm
