@@ -325,6 +325,71 @@ def build_overview(k_data, other_data):
     return pd.DataFrame(rows)
 
 
+# ── BATCH NIH REPORTER QUERY (for ROI tab) ──────────────────────────────────
+
+@st.cache_data(ttl=21600, show_spinner="Querying NIH RePORTER for all awardees (this takes ~2 minutes on first load)...")
+def batch_query_all_awardees(names: tuple) -> pd.DataFrame:
+    """Query NIH RePORTER for all awardees and return combined results."""
+    all_grants = []
+    for i, name in enumerate(names):
+        parts = name.split()
+        first, last = parts[0], parts[-1]
+        results = query_nih_reporter(first, last)
+
+        for g in results:
+            pis = g.get("principal_investigators") or []
+            pi_match = any(
+                last.upper() in (p.get("last_name", "") or "").upper()
+                and first.upper()[:3] in (p.get("first_name", "") or "").upper()[:3]
+                for p in pis
+            )
+            if not pi_match:
+                continue
+
+            is_contact = any(
+                last.upper() in (p.get("last_name", "") or "").upper()
+                and first.upper()[:3] in (p.get("first_name", "") or "").upper()[:3]
+                and p.get("is_contact_pi", False)
+                for p in pis
+            )
+
+            org = (g.get("organization") or {}).get("org_name", "")
+            ic = g.get("agency_ic_admin") or {}
+            ic_abbr = ic.get("abbreviation", "") if isinstance(ic, dict) else str(ic)
+
+            all_grants.append({
+                "Name": name,
+                "Project Number": g.get("project_num", ""),
+                "Core Project": g.get("core_project_num", ""),
+                "Activity Code": g.get("activity_code", ""),
+                "Title": (g.get("project_title") or "")[:120],
+                "Organization": org,
+                "Fiscal Year": g.get("fiscal_year"),
+                "Direct Cost": g.get("direct_cost_amt"),
+                "Indirect Cost": g.get("indirect_cost_amt"),
+                "Award Amount": g.get("award_amount"),
+                "IC": ic_abbr,
+                "Contact PI": g.get("contact_pi_name", ""),
+                "Is Contact PI": is_contact,
+                "Start Date": (g.get("project_start_date") or "")[:10],
+                "End Date": (g.get("project_end_date") or "")[:10],
+                "Location": "BU/BMC" if org.upper() in BU_ORGS else "External",
+                "Is K Grant": g.get("activity_code", "") in K_CODES,
+            })
+
+    df = pd.DataFrame(all_grants)
+    if len(df):
+        df = df.drop_duplicates(subset=["Name", "Project Number", "Fiscal Year"])
+        # Filter false positives
+        sun_bad = (df["Name"] == "Sun Lee") & ~(
+            df["Contact PI"].str.upper().str.contains("LEE-MARQUEZ|LEE, SUN Y|LEE,SUN", na=False, regex=True)
+            | df["Organization"].str.upper().isin(BU_ORGS)
+        )
+        kumar_bad = (df["Name"] == "Sudhir Kumar") & ~df["Organization"].str.upper().isin(BU_ORGS)
+        df = df[~sun_bad & ~kumar_bad]
+    return df
+
+
 # ── MAIN APP ─────────────────────────────────────────────────────────────────
 
 def main():
@@ -348,34 +413,40 @@ def main():
 
     filtered = overview[overview["FY"].isin(selected_fys) & overview["Award"].isin(selected_awards)]
 
-    # ── TOP METRICS ──────────────────────────────────────────────────────────
-    # Count unique investigators per award type (across selected FYs)
-    k_fys = set(selected_fys)
-    n_k_investigators = k_data[k_data["FY"].isin(k_fys)]["Name"].nunique()
-    if len(other_data):
-        n_pilot = other_data[(other_data["Award"] == "Pilot") & (other_data["FY"].isin(k_fys))]["Name"].nunique()
-        n_jrfac = other_data[(other_data["Award"] == "Junior Faculty") & (other_data["FY"].isin(k_fys))]["Name"].nunique()
-    else:
-        n_pilot, n_jrfac = 0, 0
-    # Bridge: we only have aggregate counts, not names
-    n_bridge = int(BRIDGE_DATA[BRIDGE_DATA["FY"].isin(k_fys)]["Count"].sum())
+    # ── TABS ─────────────────────────────────────────────────────────────────
+    main_tab, roi_tab, drill_tab, lookup_tab = st.tabs([
+        "📊 Awards Overview", "💰 ROI Summary", "🔍 Drill Down", "🔎 Investigator Lookup"
+    ])
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Investment", f"${filtered['Amount'].sum():,.0f}")
-    col2.metric("Fiscal Years", f"{filtered['FY'].nunique()}")
-    col3.metric("Award Types", f"{filtered['Award'].nunique()}")
-    col4.metric("Total Award-Years", f"{int(filtered['Count'].sum()):,}")
+    # ==================================================================
+    # TAB 1: AWARDS OVERVIEW
+    # ==================================================================
+    with main_tab:
+        # ── TOP METRICS ──────────────────────────────────────────────────
+        k_fys = set(selected_fys)
+        n_k_investigators = k_data[k_data["FY"].isin(k_fys)]["Name"].nunique()
+        if len(other_data):
+            n_pilot = other_data[(other_data["Award"] == "Pilot") & (other_data["FY"].isin(k_fys))]["Name"].nunique()
+            n_jrfac = other_data[(other_data["Award"] == "Junior Faculty") & (other_data["FY"].isin(k_fys))]["Name"].nunique()
+        else:
+            n_pilot, n_jrfac = 0, 0
+        n_bridge = int(BRIDGE_DATA[BRIDGE_DATA["FY"].isin(k_fys)]["Count"].sum())
 
-    # Unique investigator counts by award type
-    st.markdown("##### Unique Investigators by Award Type")
-    inv_cols = st.columns(4)
-    inv_cols[0].metric("K Awardees", f"{n_k_investigators}")
-    inv_cols[1].metric("Pilot Awardees", f"{n_pilot}")
-    inv_cols[2].metric("Junior Faculty", f"{n_jrfac}")
-    inv_cols[3].metric("Bridge Awards", f"{n_bridge}")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Investment", f"${filtered['Amount'].sum():,.0f}")
+        col2.metric("Fiscal Years", f"{filtered['FY'].nunique()}")
+        col3.metric("Award Types", f"{filtered['Award'].nunique()}")
+        col4.metric("Total Award-Years", f"{int(filtered['Count'].sum()):,}")
 
-    # ── OVERVIEW TABLE ───────────────────────────────────────────────────────
-    st.header("Awards Overview")
+        st.markdown("##### Unique Investigators by Award Type")
+        inv_cols = st.columns(4)
+        inv_cols[0].metric("K Awardees", f"{n_k_investigators}")
+        inv_cols[1].metric("Pilot Awardees", f"{n_pilot}")
+        inv_cols[2].metric("Junior Faculty", f"{n_jrfac}")
+        inv_cols[3].metric("Bridge Awards", f"{n_bridge}")
+
+        # ── OVERVIEW TABLE ───────────────────────────────────────────────
+        st.header("Awards Overview")
 
     # Pivot table: Award × FY
     pivot_count = filtered.pivot_table(index="Award", columns="FY", values="Count", aggfunc="sum", fill_value=0)
@@ -413,149 +484,354 @@ def main():
     display_df = pd.DataFrame(display_rows).set_index("Award")
     st.dataframe(display_df, use_container_width=True)
 
-    # ── CHART ────────────────────────────────────────────────────────────────
-    chart_data = filtered.copy()
-    chart_data["FY_sort"] = chart_data["FY_Num"]
+        # ── CHART ────────────────────────────────────────────────────────────
+        chart_data = filtered.copy()
+        chart_data["FY_sort"] = chart_data["FY_Num"]
 
-    fig = px.bar(
-        chart_data.sort_values("FY_sort"),
-        x="FY", y="Amount", color="Award",
-        barmode="stack",
-        color_discrete_map={"K Award": "#60a5fa", "Pilot": "#4ade80", "Junior Faculty": "#a78bfa", "Bridge": "#fbbf24"},
-        labels={"Amount": "Total Investment ($)", "FY": "Fiscal Year"},
-        title="Evans Endowment Investment by Award Type",
-    )
-    fig.update_layout(
-        plot_bgcolor="#1a1f2e", paper_bgcolor="#1a1f2e", font_color="#c8d0e0",
-        xaxis=dict(gridcolor="#2a3050"), yaxis=dict(gridcolor="#2a3050", tickformat="$,.0f"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    st.plotly_chart(fig, use_container_width=True)
+        fig = px.bar(
+            chart_data.sort_values("FY_sort"),
+            x="FY", y="Amount", color="Award",
+            barmode="stack",
+            color_discrete_map={"K Award": "#60a5fa", "Pilot": "#4ade80", "Junior Faculty": "#a78bfa", "Bridge": "#fbbf24"},
+            labels={"Amount": "Total Investment ($)", "FY": "Fiscal Year"},
+            title="Evans Endowment Investment by Award Type",
+        )
+        fig.update_layout(
+            plot_bgcolor="#1a1f2e", paper_bgcolor="#1a1f2e", font_color="#c8d0e0",
+            xaxis=dict(gridcolor="#2a3050"), yaxis=dict(gridcolor="#2a3050", tickformat="$,.0f"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
-    # ── DRILL-DOWN ───────────────────────────────────────────────────────────
-    st.header("Drill Down")
+    # ==================================================================
+    # TAB 2: ROI SUMMARY
+    # ==================================================================
+    with roi_tab:
+        st.header("Return on Investment Analysis")
+        st.caption(
+            "Conservative estimate: only NIH grants newly initiated AFTER the last year of DoM support. "
+            "GT97 awards are excluded — they are an accounting mechanism, not a research investment."
+        )
 
-    drill_col1, drill_col2 = st.columns(2)
-    with drill_col1:
-        drill_award = st.selectbox("Select Award Type", ["K Award", "Pilot", "Junior Faculty"])
-    with drill_col2:
-        if drill_award == "K Award":
-            avail_fys = sorted(k_data["FY"].unique())
-        elif len(other_data):
-            avail_fys = sorted(other_data[other_data["Award"] == drill_award]["FY"].dropna().unique())
+        # Collect all unique awardee names (K + Pilot + Jr Faculty)
+        all_k_names = sorted(k_data["Name"].unique())
+        pilot_jr_names = sorted(other_data["Name"].unique()) if len(other_data) else []
+        combined_names = sorted(set(all_k_names) | set(pilot_jr_names))
+
+        # Batch query — cached for 6 hours
+        all_nih = batch_query_all_awardees(tuple(combined_names))
+
+        if len(all_nih) == 0:
+            st.warning("No NIH grants found. Try reloading.")
         else:
-            avail_fys = []
-        drill_fy = st.selectbox("Select Fiscal Year", avail_fys, index=len(avail_fys) - 1 if avail_fys else 0)
+            # Build per-awardee last support year
+            last_support = {}
+            for name in combined_names:
+                years = []
+                pk = k_data[k_data["Name"] == name]
+                if len(pk):
+                    years.append(pk["FY_Num"].max())
+                if len(other_data):
+                    po = other_data[other_data["Name"] == name]
+                    if len(po):
+                        years.append(po["FY_Num"].max())
+                last_support[name] = max(years) if years else 9999
 
-    if drill_award == "K Award" and drill_fy:
-        fy_k = k_data[k_data["FY"] == drill_fy].copy()
-        st.subheader(f"K Awardees — {drill_fy} ({len(fy_k)} awardees)")
+            # Filter to non-K, post-support grants
+            non_k = all_nih[~all_nih["Is K Grant"]].copy()
+            non_k["Last_Support"] = non_k["Name"].map(last_support)
+            post_support = non_k[non_k["Fiscal Year"] > non_k["Last_Support"]].copy()
 
-        display_k = fy_k[["Name", "Section", "SalaryGap", "TotalCost", "AwardNo"]].copy()
-        display_k.columns = ["Name", "Section", "50% Salary Gap", "Total Cost", "Award Number"]
-        display_k["50% Salary Gap"] = display_k["50% Salary Gap"].apply(lambda x: f"${x:,.0f}" if pd.notna(x) and x > 0 else "—")
-        display_k["Total Cost"] = display_k["Total Cost"].apply(lambda x: f"${x:,.0f}" if pd.notna(x) and x > 0 else "—")
-        display_k = display_k.sort_values("Name").reset_index(drop=True)
-        st.dataframe(display_k, use_container_width=True, hide_index=True)
+            # === HEADLINE METRICS ===
+            # DoM investment
+            k_investment = k_data["TotalCost"].sum()
+            pilot_investment = other_data["Amount"].sum() if len(other_data) else 0
+            total_dom_investment = k_investment + pilot_investment
 
-    elif drill_award in ("Pilot", "Junior Faculty") and drill_fy and len(other_data):
-        fy_other = other_data[(other_data["Award"] == drill_award) & (other_data["FY"] == drill_fy)].copy()
-        st.subheader(f"{drill_award} Awards — {drill_fy} ({len(fy_other)} awards)")
+            # NIH return
+            total_direct = post_support["Direct Cost"].sum()
+            total_indirect = post_support["Indirect Cost"].sum()
+            total_nih = total_direct + total_indirect
+            roi_direct = total_direct / total_dom_investment if total_dom_investment > 0 else 0
+            roi_total = total_nih / total_dom_investment if total_dom_investment > 0 else 0
 
-        display_other = fy_other[["Name", "Section", "Amount"]].copy()
-        display_other["Amount"] = display_other["Amount"].apply(lambda x: f"${x:,.0f}" if pd.notna(x) else "—")
-        display_other = display_other.sort_values("Name").reset_index(drop=True)
-        st.dataframe(display_other, use_container_width=True, hide_index=True)
+            n_with_funding = post_support["Name"].nunique()
+            n_total = len(combined_names)
 
-    # ── INDIVIDUAL PI LOOKUP ─────────────────────────────────────────────────
-    st.header("Investigator NIH Grant Lookup")
-    st.caption("Select an awardee to view their full NIH grant portfolio from RePORTER")
+            st.markdown("### Executive Summary")
+            st.markdown(
+                f"The Department invested **${total_dom_investment:,.0f}** across the K-award salary-gap program "
+                f"({len(all_k_names)} faculty) and the pilot / junior faculty award programs "
+                f"({len(pilot_jr_names)} faculty). "
+                f"Conservatively counted — only NIH grants newly initiated after the period of DoM support — "
+                f"**{n_with_funding}** of these investigators have generated "
+                f"**${total_direct:,.0f}** in NIH direct costs and "
+                f"**${total_nih:,.0f}** in total NIH funding."
+            )
 
-    # Build list of all awardee names
-    all_names = sorted(k_data["Name"].unique())
-    if len(other_data):
-        all_names = sorted(set(all_names) | set(other_data["Name"].unique()))
+            hc1, hc2, hc3, hc4 = st.columns(4)
+            hc1.metric("DoM Investment", f"${total_dom_investment / 1e6:.1f}M")
+            hc2.metric("NIH Direct (Post-Support)", f"${total_direct / 1e6:.1f}M")
+            hc3.metric("NIH Total (Post-Support)", f"${total_nih / 1e6:.1f}M")
+            hc4.metric("ROI (Direct / DoM)", f"{roi_direct:.0f}×")
 
-    selected_pi = st.selectbox("Select Investigator", [""] + all_names, index=0)
+            rc1, rc2, rc3, rc4 = st.columns(4)
+            rc1.metric("Total Faculty Supported", f"{n_total}")
+            rc2.metric("With Post-Support NIH $", f"{n_with_funding}")
+            rc3.metric("Transition Rate", f"{100 * n_with_funding / n_total:.0f}%")
+            rc4.metric("ROI (Total / DoM)", f"{roi_total:.0f}×")
 
-    if selected_pi:
-        # Show their K/award history
-        pi_k = k_data[k_data["Name"] == selected_pi]
-        if len(pi_k):
-            k_years = ", ".join(sorted(pi_k["FY"].unique()))
-            k_sections = ", ".join(pi_k["Section"].unique())
-            last_k = pi_k["FY_Num"].max()
-            total_gap = pi_k["SalaryGap"].sum()
-            st.info(f"**K Award history:** {k_years} | Section: {k_sections} | "
-                    f"Total 50% Salary Gap: ${total_gap:,.0f} | Last K year: FY{last_k}")
-        else:
-            last_k = None
+            # === K-TO-R BY SECTION ===
+            st.markdown("### K-to-R Outcomes by Section")
+            k_sections = k_data.groupby(["Name", "Section"]).agg(
+                LastK=("FY_Num", "max"),
+                TotalGap=("SalaryGap", "sum"),
+            ).reset_index()
 
+            k_post = post_support[post_support["Name"].isin(all_k_names)]
+            k_post_by_pi = k_post.groupby("Name").agg(
+                PostK_Direct=("Direct Cost", "sum"),
+                PostK_Indirect=("Indirect Cost", "sum"),
+                PostK_Grants=("Core Project", "nunique"),
+            ).reset_index()
+
+            k_merged = k_sections.merge(k_post_by_pi, on="Name", how="left")
+            k_merged["PostK_Direct"] = k_merged["PostK_Direct"].fillna(0)
+            k_merged["PostK_Indirect"] = k_merged["PostK_Indirect"].fillna(0)
+            k_merged["PostK_Grants"] = k_merged["PostK_Grants"].fillna(0).astype(int)
+            k_merged["HasPostK"] = k_merged["PostK_Direct"] > 0
+
+            section_summary = k_merged.groupby("Section").agg(
+                N_Awardees=("Name", "nunique"),
+                N_Transitioned=("HasPostK", "sum"),
+                Total_Gap=("TotalGap", "sum"),
+                Total_Direct=("PostK_Direct", "sum"),
+            ).reset_index()
+            section_summary["Transition %"] = (100 * section_summary["N_Transitioned"] / section_summary["N_Awardees"]).round(0).astype(int)
+            section_summary = section_summary.sort_values("Total_Direct", ascending=False)
+
+            # Format for display
+            sec_display = section_summary.copy()
+            sec_display["Total_Gap"] = sec_display["Total_Gap"].apply(lambda x: f"${x:,.0f}")
+            sec_display["Total_Direct"] = sec_display["Total_Direct"].apply(lambda x: f"${x:,.0f}")
+            sec_display["Transition %"] = sec_display["Transition %"].astype(str) + "%"
+            sec_display.columns = ["Section", "K Awardees", "Transitioned", "DoM Gap Investment", "Post-K NIH Direct", "Transition %"]
+            st.dataframe(sec_display, use_container_width=True, hide_index=True)
+
+            # Section bar chart
+            fig_sec = px.bar(
+                section_summary, x="Section", y="Total_Direct",
+                color="N_Transitioned", color_continuous_scale="Blues",
+                labels={"Total_Direct": "Post-K NIH Direct Costs ($)", "N_Transitioned": "# Transitioned"},
+                title="Post-K NIH Direct Costs by Section",
+            )
+            fig_sec.update_layout(
+                plot_bgcolor="#1a1f2e", paper_bgcolor="#1a1f2e", font_color="#c8d0e0",
+                xaxis=dict(gridcolor="#2a3050", tickangle=45),
+                yaxis=dict(gridcolor="#2a3050", tickformat="$,.0f"),
+            )
+            st.plotly_chart(fig_sec, use_container_width=True)
+
+            # === TOP AWARDEES ===
+            st.markdown("### Top 15 Awardees by Post-Support NIH Direct Funding")
+            top_pi = post_support.groupby("Name").agg(
+                Direct=("Direct Cost", "sum"),
+                Indirect=("Indirect Cost", "sum"),
+                N_Grants=("Core Project", "nunique"),
+            ).reset_index().sort_values("Direct", ascending=False).head(15)
+
+            # Add their section
+            name_section = {}
+            for _, r in k_data.drop_duplicates("Name").iterrows():
+                name_section[r["Name"]] = r["Section"]
+            if len(other_data):
+                for _, r in other_data.drop_duplicates("Name").iterrows():
+                    if r["Name"] not in name_section:
+                        name_section[r["Name"]] = r.get("Section", "")
+
+            top_pi["Section"] = top_pi["Name"].map(name_section).fillna("")
+            top_display = top_pi[["Name", "Section", "N_Grants", "Direct", "Indirect"]].copy()
+            top_display["Total"] = top_display["Direct"] + top_display["Indirect"]
+            top_display.columns = ["Name", "Section", "Unique Grants", "Direct Costs", "Indirect Costs", "Total"]
+            for c in ["Direct Costs", "Indirect Costs", "Total"]:
+                top_display[c] = top_display[c].apply(lambda x: f"${x:,.0f}")
+            st.dataframe(top_display, use_container_width=True, hide_index=True)
+
+            # === INVESTMENT VS RETURN CHART ===
+            st.markdown("### Investment vs Return by Program")
+            programs = []
+            programs.append({
+                "Program": "K Award",
+                "DoM Investment": k_investment,
+                "NIH Direct (Post-Support)": k_post["Direct Cost"].sum(),
+            })
+            if len(other_data):
+                for award_type in ["Pilot", "Junior Faculty"]:
+                    at_sub = other_data[other_data["Award"] == award_type]
+                    at_names = set(at_sub["Name"].unique())
+                    at_post = post_support[post_support["Name"].isin(at_names) & ~post_support["Name"].isin(all_k_names)]
+                    programs.append({
+                        "Program": award_type,
+                        "DoM Investment": at_sub["Amount"].sum(),
+                        "NIH Direct (Post-Support)": at_post["Direct Cost"].sum(),
+                    })
+
+            prog_df = pd.DataFrame(programs)
+            fig_inv = go.Figure()
+            fig_inv.add_trace(go.Bar(name="DoM Investment", x=prog_df["Program"], y=prog_df["DoM Investment"],
+                                     marker_color="#f59e0b"))
+            fig_inv.add_trace(go.Bar(name="NIH Direct Return", x=prog_df["Program"], y=prog_df["NIH Direct (Post-Support)"],
+                                     marker_color="#4ade80"))
+            fig_inv.update_layout(
+                barmode="group", title="DoM Investment vs NIH Return by Program",
+                plot_bgcolor="#1a1f2e", paper_bgcolor="#1a1f2e", font_color="#c8d0e0",
+                xaxis=dict(gridcolor="#2a3050"), yaxis=dict(gridcolor="#2a3050", tickformat="$,.0f"),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            )
+            st.plotly_chart(fig_inv, use_container_width=True)
+
+            # === METHODOLOGY ===
+            with st.expander("Methodology & Caveats"):
+                st.markdown("""
+**Data sources:**
+- K award tracking: `K award 2016 - 2026.xlsx` (DoM internal)
+- Pilot / Junior Faculty: `DoM Award Tracker.xlsx` (DoM internal)
+- NIH grant data: NIH RePORTER API v2 (public, queried live)
+
+**Conservative estimate:** Only counts NIH grants whose fiscal year is strictly
+AFTER the last year of DoM support for that investigator. K-mechanism grants
+are excluded from the return calculation.
+
+**Caveats:**
+- GT97 awards excluded (accounting mechanism, not research investment)
+- Bridge funding is included in the overview but not in ROI calculations (no individual-level data)
+- NIH RePORTER name matching uses first 3 characters of first name + full last name; false positives filtered for known common names
+- Some investigators may have grants not captured due to name variations
+- ROI does not imply causation — DoM support is one of many factors in an investigator's success
+""")
+
+    # ==================================================================
+    # TAB 3: DRILL DOWN
+    # ==================================================================
+    with drill_tab:
+        st.header("Drill Down by Award Type and Year")
+
+        drill_col1, drill_col2 = st.columns(2)
+        with drill_col1:
+            drill_award = st.selectbox("Select Award Type", ["K Award", "Pilot", "Junior Faculty"])
+        with drill_col2:
+            if drill_award == "K Award":
+                avail_fys = sorted(k_data["FY"].unique())
+            elif len(other_data):
+                avail_fys = sorted(other_data[other_data["Award"] == drill_award]["FY"].dropna().unique())
+            else:
+                avail_fys = []
+            drill_fy = st.selectbox("Select Fiscal Year", avail_fys, index=len(avail_fys) - 1 if avail_fys else 0)
+
+        if drill_award == "K Award" and drill_fy:
+            fy_k = k_data[k_data["FY"] == drill_fy].copy()
+            st.subheader(f"K Awardees — {drill_fy} ({len(fy_k)} awardees)")
+
+            display_k = fy_k[["Name", "Section", "SalaryGap", "TotalCost", "AwardNo"]].copy()
+            display_k.columns = ["Name", "Section", "50% Salary Gap", "Total Cost", "Award Number"]
+            display_k["50% Salary Gap"] = display_k["50% Salary Gap"].apply(lambda x: f"${x:,.0f}" if pd.notna(x) and x > 0 else "—")
+            display_k["Total Cost"] = display_k["Total Cost"].apply(lambda x: f"${x:,.0f}" if pd.notna(x) and x > 0 else "—")
+            display_k = display_k.sort_values("Name").reset_index(drop=True)
+            st.dataframe(display_k, use_container_width=True, hide_index=True)
+
+        elif drill_award in ("Pilot", "Junior Faculty") and drill_fy and len(other_data):
+            fy_other = other_data[(other_data["Award"] == drill_award) & (other_data["FY"] == drill_fy)].copy()
+            st.subheader(f"{drill_award} Awards — {drill_fy} ({len(fy_other)} awards)")
+
+            display_other = fy_other[["Name", "Section", "Amount"]].copy()
+            display_other["Amount"] = display_other["Amount"].apply(lambda x: f"${x:,.0f}" if pd.notna(x) else "—")
+            display_other = display_other.sort_values("Name").reset_index(drop=True)
+            st.dataframe(display_other, use_container_width=True, hide_index=True)
+
+    # ==================================================================
+    # TAB 4: INDIVIDUAL PI LOOKUP
+    # ==================================================================
+    with lookup_tab:
+        st.header("Investigator NIH Grant Lookup")
+        st.caption("Select an awardee to view their full NIH grant portfolio from RePORTER")
+
+        all_names = sorted(k_data["Name"].unique())
         if len(other_data):
-            pi_other = other_data[other_data["Name"] == selected_pi]
-            if len(pi_other):
-                for _, row in pi_other.iterrows():
-                    st.info(f"**{row['Award']}:** {row['FY']} | Section: {row['Section']} | Amount: ${row['Amount']:,.0f}")
+            all_names = sorted(set(all_names) | set(other_data["Name"].unique()))
 
-        # Query NIH RePORTER
-        nih_grants = get_nih_grants_for_person(selected_pi)
+        selected_pi = st.selectbox("Select Investigator", [""] + all_names, index=0)
 
-        if len(nih_grants) == 0:
-            st.warning("No NIH grants found in RePORTER for this investigator.")
-        else:
-            # Split into K grants vs post-K grants
-            k_grants = nih_grants[nih_grants["Is K Grant"]].copy()
-            non_k = nih_grants[~nih_grants["Is K Grant"]].copy()
-
-            if last_k:
-                post_k = non_k[non_k["Fiscal Year"] > last_k]
-                during_k = non_k[non_k["Fiscal Year"] <= last_k]
+        if selected_pi:
+            pi_k = k_data[k_data["Name"] == selected_pi]
+            if len(pi_k):
+                k_years = ", ".join(sorted(pi_k["FY"].unique()))
+                k_sections = ", ".join(pi_k["Section"].unique())
+                last_k = pi_k["FY_Num"].max()
+                total_gap = pi_k["SalaryGap"].sum()
+                st.info(f"**K Award history:** {k_years} | Section: {k_sections} | "
+                        f"Total 50% Salary Gap: ${total_gap:,.0f} | Last K year: FY{last_k}")
             else:
-                post_k = non_k
-                during_k = pd.DataFrame()
+                last_k = None
 
-            # Metrics
-            mc1, mc2, mc3, mc4 = st.columns(4)
-            mc1.metric("Total NIH Grants", f"{len(nih_grants)}")
-            mc2.metric("K Grant Years", f"{len(k_grants)}")
-            mc3.metric("Post-K Non-K Grants", f"{len(post_k)}")
-            if len(post_k):
-                mc4.metric("Post-K Direct Costs", f"${post_k['Direct Cost'].sum():,.0f}")
+            if len(other_data):
+                pi_other = other_data[other_data["Name"] == selected_pi]
+                if len(pi_other):
+                    for _, row in pi_other.iterrows():
+                        st.info(f"**{row['Award']}:** {row['FY']} | Section: {row['Section']} | Amount: ${row['Amount']:,.0f}")
+
+            nih_grants = get_nih_grants_for_person(selected_pi)
+
+            if len(nih_grants) == 0:
+                st.warning("No NIH grants found in RePORTER for this investigator.")
             else:
-                mc4.metric("Post-K Direct Costs", "$0")
+                k_grants = nih_grants[nih_grants["Is K Grant"]].copy()
+                non_k = nih_grants[~nih_grants["Is K Grant"]].copy()
 
-            # Tabs
-            tab1, tab2, tab3 = st.tabs(["Post-K Grants", "K Grants (RePORTER)", "All Grants"])
+                if last_k:
+                    post_k = non_k[non_k["Fiscal Year"] > last_k]
+                else:
+                    post_k = non_k
 
-            display_cols = ["Project Number", "Activity Code", "Title", "Organization",
-                           "Fiscal Year", "Direct Cost", "Indirect Cost", "Award Amount",
-                           "IC", "Contact PI", "Location"]
-
-            with tab1:
+                mc1, mc2, mc3, mc4 = st.columns(4)
+                mc1.metric("Total NIH Grants", f"{len(nih_grants)}")
+                mc2.metric("K Grant Years", f"{len(k_grants)}")
+                mc3.metric("Post-K Non-K Grants", f"{len(post_k)}")
                 if len(post_k):
-                    st.subheader(f"Non-K Grants After K Period (FY{last_k}+)" if last_k else "Non-K Grants")
+                    mc4.metric("Post-K Direct Costs", f"${post_k['Direct Cost'].sum():,.0f}")
+                else:
+                    mc4.metric("Post-K Direct Costs", "$0")
+
+                pi_tab1, pi_tab2, pi_tab3 = st.tabs(["Post-K Grants", "K Grants (RePORTER)", "All Grants"])
+
+                display_cols = ["Project Number", "Activity Code", "Title", "Organization",
+                               "Fiscal Year", "Direct Cost", "Indirect Cost", "Award Amount",
+                               "IC", "Contact PI", "Location"]
+
+                with pi_tab1:
+                    if len(post_k):
+                        st.subheader(f"Non-K Grants After K Period (FY{last_k}+)" if last_k else "Non-K Grants")
+                        st.dataframe(
+                            post_k[display_cols].sort_values("Fiscal Year", ascending=False).reset_index(drop=True),
+                            use_container_width=True, hide_index=True,
+                        )
+                    else:
+                        st.info("No post-K non-K grants found." +
+                                (" K period may still be active." if last_k and last_k >= 2025 else ""))
+
+                with pi_tab2:
+                    if len(k_grants):
+                        st.dataframe(
+                            k_grants[display_cols].sort_values("Fiscal Year", ascending=False).reset_index(drop=True),
+                            use_container_width=True, hide_index=True,
+                        )
+                    else:
+                        st.info("No K grants found in NIH RePORTER.")
+
+                with pi_tab3:
                     st.dataframe(
-                        post_k[display_cols].sort_values("Fiscal Year", ascending=False).reset_index(drop=True),
+                        nih_grants[display_cols].sort_values("Fiscal Year", ascending=False).reset_index(drop=True),
                         use_container_width=True, hide_index=True,
                     )
-                else:
-                    st.info("No post-K non-K grants found." +
-                            (" K period may still be active." if last_k and last_k >= 2025 else ""))
-
-            with tab2:
-                if len(k_grants):
-                    st.dataframe(
-                        k_grants[display_cols].sort_values("Fiscal Year", ascending=False).reset_index(drop=True),
-                        use_container_width=True, hide_index=True,
-                    )
-                else:
-                    st.info("No K grants found in NIH RePORTER.")
-
-            with tab3:
-                st.dataframe(
-                    nih_grants[display_cols].sort_values("Fiscal Year", ascending=False).reset_index(drop=True),
-                    use_container_width=True, hide_index=True,
-                )
 
 
 if __name__ == "__main__":
