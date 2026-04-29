@@ -558,6 +558,16 @@ def main():
             n_with_funding = post_support["Name"].nunique()
             n_total = len(combined_names)
 
+            # Transition rate: only count awardees whose support ended >1 year ago
+            # (don't penalize those still on K or recently finished)
+            CURRENT_FY = 2026
+            BUFFER_YEARS = 1
+            eligible_names = [n for n, yr in last_support.items() if yr + BUFFER_YEARS < CURRENT_FY]
+            n_eligible = len(eligible_names)
+            n_eligible_transitioned = post_support[post_support["Name"].isin(eligible_names)]["Name"].nunique()
+            transition_pct = (100 * n_eligible_transitioned / n_eligible) if n_eligible > 0 else 0
+            n_too_recent = n_total - n_eligible
+
             st.markdown("### Executive Summary")
             st.markdown(
                 f"The Department invested **${total_dom_investment:,.0f}** across the K-award salary-gap program "
@@ -568,6 +578,10 @@ def main():
                 f"**${total_direct:,.0f}** in NIH direct costs and "
                 f"**${total_nih:,.0f}** in total NIH funding."
             )
+            st.caption(
+                f"Transition rate excludes {n_too_recent} awardees whose support ended in "
+                f"FY{CURRENT_FY - BUFFER_YEARS} or later (insufficient time to secure subsequent funding)."
+            )
 
             hc1, hc2, hc3, hc4 = st.columns(4)
             hc1.metric("DoM Investment", f"${total_dom_investment / 1e6:.1f}M")
@@ -577,8 +591,8 @@ def main():
 
             rc1, rc2, rc3, rc4 = st.columns(4)
             rc1.metric("Total Faculty Supported", f"{n_total}")
-            rc2.metric("With Post-Support NIH $", f"{n_with_funding}")
-            rc3.metric("Transition Rate", f"{100 * n_with_funding / n_total:.0f}%")
+            rc2.metric("Eligible for Transition", f"{n_eligible}", help=f"Excludes {n_too_recent} with support ending FY{CURRENT_FY - BUFFER_YEARS}+")
+            rc3.metric("Transition Rate", f"{transition_pct:.0f}%", help=f"{n_eligible_transitioned} of {n_eligible} eligible")
             rc4.metric("ROI (Total / DoM)", f"{roi_total:.0f}×")
 
             # === K-TO-R BY SECTION ===
@@ -600,14 +614,21 @@ def main():
             k_merged["PostK_Indirect"] = k_merged["PostK_Indirect"].fillna(0)
             k_merged["PostK_Grants"] = k_merged["PostK_Grants"].fillna(0).astype(int)
             k_merged["HasPostK"] = k_merged["PostK_Direct"] > 0
+            # Only count toward transition rate if K ended >1 year ago
+            k_merged["Eligible"] = k_merged["LastK"] + BUFFER_YEARS < CURRENT_FY
 
             section_summary = k_merged.groupby("Section").agg(
                 N_Awardees=("Name", "nunique"),
-                N_Transitioned=("HasPostK", "sum"),
+                N_Eligible=("Eligible", "sum"),
+                N_Transitioned=("HasPostK", lambda x: (x & k_merged.loc[x.index, "Eligible"]).sum()),
                 Total_Gap=("TotalGap", "sum"),
                 Total_Direct=("PostK_Direct", "sum"),
             ).reset_index()
-            section_summary["Transition %"] = (100 * section_summary["N_Transitioned"] / section_summary["N_Awardees"]).round(0).astype(int)
+            section_summary["Transition %"] = (
+                (100 * section_summary["N_Transitioned"] / section_summary["N_Eligible"])
+                .where(section_summary["N_Eligible"] > 0, other=0)
+                .round(0).astype(int)
+            )
             section_summary = section_summary.sort_values("Total_Direct", ascending=False)
 
             # Format for display
@@ -615,7 +636,7 @@ def main():
             sec_display["Total_Gap"] = sec_display["Total_Gap"].apply(lambda x: f"${x:,.0f}")
             sec_display["Total_Direct"] = sec_display["Total_Direct"].apply(lambda x: f"${x:,.0f}")
             sec_display["Transition %"] = sec_display["Transition %"].astype(str) + "%"
-            sec_display.columns = ["Section", "K Awardees", "Transitioned", "DoM Gap Investment", "Post-K NIH Direct", "Transition %"]
+            sec_display.columns = ["Section", "K Awardees", "Eligible", "Transitioned", "DoM Gap Investment", "Post-K NIH Direct", "Transition %"]
             st.dataframe(sec_display, use_container_width=True, hide_index=True)
 
             # Section bar chart
