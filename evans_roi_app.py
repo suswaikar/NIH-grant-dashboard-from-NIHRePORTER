@@ -633,11 +633,30 @@ def main():
 
             # Format for display
             sec_display = section_summary.copy()
-            sec_display["Total_Gap"] = sec_display["Total_Gap"].apply(lambda x: f"${x:,.0f}")
-            sec_display["Total_Direct"] = sec_display["Total_Direct"].apply(lambda x: f"${x:,.0f}")
-            sec_display["Transition %"] = sec_display["Transition %"].astype(str) + "%"
-            sec_display.columns = ["Section", "K Awardees", "Eligible", "Transitioned", "DoM Gap Investment", "Post-K NIH Direct", "Transition %"]
-            st.dataframe(sec_display, use_container_width=True, hide_index=True)
+            sec_display["Total_Gap_fmt"] = sec_display["Total_Gap"].apply(lambda x: f"${x:,.0f}")
+            sec_display["Total_Direct_fmt"] = sec_display["Total_Direct"].apply(lambda x: f"${x:,.0f}")
+            sec_display["Transition_pct"] = sec_display["Transition %"].astype(str) + "%"
+
+            for _, sec_row in sec_display.iterrows():
+                section = sec_row["Section"]
+                n_aw = int(sec_row["N_Awardees"])
+                n_el = int(sec_row["N_Eligible"])
+                n_tr = int(sec_row["N_Transitioned"])
+                with st.expander(
+                    f"**{section}** — {n_aw} awardees, {n_tr} transitioned "
+                    f"({sec_row['Transition_pct']}), "
+                    f"Gap: {sec_row['Total_Gap_fmt']}, "
+                    f"Post-K Direct: {sec_row['Total_Direct_fmt']}"
+                ):
+                    sec_people = k_merged[k_merged["Section"] == section].sort_values("Name")
+                    people_display = sec_people[["Name", "LastK", "Eligible", "HasPostK", "TotalGap", "PostK_Direct", "PostK_Grants"]].copy()
+                    people_display.columns = ["Name", "Last K Year", "Eligible", "Transitioned", "DoM Gap", "Post-K Direct", "Post-K Grants"]
+                    people_display["Last K Year"] = people_display["Last K Year"].apply(lambda x: f"FY{x}")
+                    people_display["Eligible"] = people_display["Eligible"].map({True: "Yes", False: "Too recent"})
+                    people_display["Transitioned"] = people_display["Transitioned"].map({True: "✓", False: "—"})
+                    people_display["DoM Gap"] = people_display["DoM Gap"].apply(lambda x: f"${x:,.0f}" if x > 0 else "—")
+                    people_display["Post-K Direct"] = people_display["Post-K Direct"].apply(lambda x: f"${x:,.0f}" if x > 0 else "—")
+                    st.dataframe(people_display, use_container_width=True, hide_index=True)
 
             # Section bar chart
             fig_sec = px.bar(
