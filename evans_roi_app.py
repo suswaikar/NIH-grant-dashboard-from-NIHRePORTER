@@ -448,41 +448,41 @@ def main():
         # ── OVERVIEW TABLE ───────────────────────────────────────────────
         st.header("Awards Overview")
 
-    # Pivot table: Award × FY
-    pivot_count = filtered.pivot_table(index="Award", columns="FY", values="Count", aggfunc="sum", fill_value=0)
-    pivot_amount = filtered.pivot_table(index="Award", columns="FY", values="Amount", aggfunc="sum", fill_value=0)
+        # Pivot table: Award × FY
+        pivot_count = filtered.pivot_table(index="Award", columns="FY", values="Count", aggfunc="sum", fill_value=0)
+        pivot_amount = filtered.pivot_table(index="Award", columns="FY", values="Amount", aggfunc="sum", fill_value=0)
 
-    # Reorder
-    award_order = [a for a in ["K Award", "Pilot", "Junior Faculty", "Bridge"] if a in pivot_count.index]
-    fy_order = [f for f in sorted(filtered["FY"].unique()) if f in pivot_count.columns]
-    pivot_count = pivot_count.reindex(index=award_order, columns=fy_order, fill_value=0)
-    pivot_amount = pivot_amount.reindex(index=award_order, columns=fy_order, fill_value=0)
+        # Reorder
+        award_order = [a for a in ["K Award", "Pilot", "Junior Faculty", "Bridge"] if a in pivot_count.index]
+        fy_order = [f for f in sorted(filtered["FY"].unique()) if f in pivot_count.columns]
+        pivot_count = pivot_count.reindex(index=award_order, columns=fy_order, fill_value=0)
+        pivot_amount = pivot_amount.reindex(index=award_order, columns=fy_order, fill_value=0)
 
-    # Combined display
-    display_rows = []
-    for award in award_order:
-        row = {"Award": award}
+        # Combined display
+        display_rows = []
+        for award in award_order:
+            row = {"Award": award}
+            for fy in fy_order:
+                c = int(pivot_count.loc[award, fy]) if award in pivot_count.index else 0
+                a = pivot_amount.loc[award, fy] if award in pivot_amount.index else 0
+                row[fy] = f"{c} (${a:,.0f})" if c > 0 else "—"
+            # Total
+            total_c = int(pivot_count.loc[award].sum())
+            total_a = pivot_amount.loc[award].sum()
+            row["Total"] = f"{total_c} (${total_a:,.0f})"
+            display_rows.append(row)
+
+        # Grand total row
+        grand = {"Award": "TOTAL"}
         for fy in fy_order:
-            c = int(pivot_count.loc[award, fy]) if award in pivot_count.index else 0
-            a = pivot_amount.loc[award, fy] if award in pivot_amount.index else 0
-            row[fy] = f"{c} (${a:,.0f})" if c > 0 else "—"
-        # Total
-        total_c = int(pivot_count.loc[award].sum())
-        total_a = pivot_amount.loc[award].sum()
-        row["Total"] = f"{total_c} (${total_a:,.0f})"
-        display_rows.append(row)
+            gc = int(pivot_count[fy].sum())
+            ga = pivot_amount[fy].sum()
+            grand[fy] = f"{gc} (${ga:,.0f})" if gc > 0 else "—"
+        grand["Total"] = f"{int(pivot_count.values.sum())} (${pivot_amount.values.sum():,.0f})"
+        display_rows.append(grand)
 
-    # Grand total row
-    grand = {"Award": "TOTAL"}
-    for fy in fy_order:
-        gc = int(pivot_count[fy].sum())
-        ga = pivot_amount[fy].sum()
-        grand[fy] = f"{gc} (${ga:,.0f})" if gc > 0 else "—"
-    grand["Total"] = f"{int(pivot_count.values.sum())} (${pivot_amount.values.sum():,.0f})"
-    display_rows.append(grand)
-
-    display_df = pd.DataFrame(display_rows).set_index("Award")
-    st.dataframe(display_df, use_container_width=True)
+        display_df = pd.DataFrame(display_rows).set_index("Award")
+        st.dataframe(display_df, use_container_width=True)
 
         # ── CHART ────────────────────────────────────────────────────────────
         chart_data = filtered.copy()
