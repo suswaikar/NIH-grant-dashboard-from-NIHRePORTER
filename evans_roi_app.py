@@ -174,7 +174,27 @@ def load_k_awardees():
 
         all_rows.append(df[["Name", "Section", "FY", "FY_Num", "SalaryGap", "TotalCost", "AwardNo"]])
 
-    return pd.concat(all_rows, ignore_index=True)
+    result = pd.concat(all_rows, ignore_index=True)
+
+    # Exclude investigators whose ONLY K award(s) in the tracking spreadsheet are K24s.
+    # K24 is a midcareer mentoring award — not an early-career development award supported
+    # by Evans/DoM salary gap funding. Including them inflates both the awardee count and
+    # the post-K ROI (since their existing portfolios pre-date the K24).
+    def _is_k24_only(award_str):
+        """True if award number contains K24 (case-insensitive)."""
+        return bool(re.search(r"K24", str(award_str), re.IGNORECASE))
+
+    k24_flags = result.groupby("Name")["AwardNo"].apply(
+        lambda awards: all(_is_k24_only(a) for a in awards if str(a).strip() not in ("", "nan", "None", "TBA", "Pending"))
+    )
+    k24_only_names = set(k24_flags[k24_flags].index)
+    if k24_only_names:
+        result = result[~result["Name"].isin(k24_only_names)]
+        import streamlit as st
+        # Log for transparency but don't clutter the UI
+        print(f"[INFO] Excluded K24-only investigators from K pipeline: {sorted(k24_only_names)}")
+
+    return result
 
 
 @st.cache_data(ttl=3600)
