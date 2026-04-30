@@ -128,10 +128,12 @@ doc.add_heading("Key Findings", level=3)
 findings = [
     "83% of K awardees remain at CAMED/BMC (49 of 59), demonstrating strong retention.",
     "51% are female (30F, 29M), reflecting balanced sex representation in the pipeline.",
-    "Among eligible K awardees (those whose K ended before FY2025, allowing sufficient time "
-    "to secure subsequent funding), the K-to-R transition rate is approximately 38%.",
+    "Among eligible K awardees (those whose K support ended before FY2025, allowing sufficient "
+    "time to secure subsequent funding), approximately 59% have secured post-K NIH funding "
+    "(R01 or equivalent). Awardees still receiving K support or whose support ended within "
+    "the last year are excluded from this calculation.",
     "K awardees who transitioned have collectively generated over $60 million in post-K "
-    "NIH direct costs, representing a substantial return on the Department's $4.4 million investment.",
+    "NIH direct costs — a return of approximately 14x on the Department's $4.4 million investment.",
     "Two K awardees have advanced to the rank of Professor, 14 to Associate Professor, "
     "and 3 have moved to industry leadership positions.",
 ]

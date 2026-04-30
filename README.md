@@ -147,7 +147,7 @@ To update PI demographics (sex, current position):
 - **K award program**: 59 investigators, $4.4M in salary gap support (FY2016–2026)
 - **Retention**: 83% of K awardees still at CAMED/BMC
 - **Sex balance**: 51% female, 49% male among K awardees
-- **K-to-R transition**: ~38% of eligible K awardees secured post-K NIH funding
+- **K-to-R transition**: ~59% of eligible K awardees (K ended before FY2025) secured post-K NIH funding
 - **Post-K NIH direct costs**: $60M+ (conservative estimate)
 - **ROI**: ~14× direct costs returned per dollar invested
 
